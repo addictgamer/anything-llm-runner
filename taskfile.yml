@@ -1,0 +1,74 @@
+version: '3'
+
+env:
+  STORAGE_LOCATION:
+    sh: echo "$(pwd)/docker-storage"
+  CONTAINER_NAME: "anything_llm"
+  ANYTHING_LLM_VERSION: 718888981cc8dfc5d0bb0df81a66420a45aa9d2308acf709835eefd49a0ba411
+
+tasks:
+  setup:
+    desc: "Setup anything-llm"
+    status:
+      - test -f $STORAGE_LOCATION/.env
+    cmds:
+      - |
+        mkdir -p "$STORAGE_LOCATION"
+        touch "$STORAGE_LOCATION/.env"
+
+  start-daemon:
+    desc: "Start anything-llm (daemon mode; background task)."
+    deps: [setup]
+    status:
+      - test $(docker ps -f name=$CONTAINER_NAME | wc -l) -gt 1
+    preconditions:
+      - pgrep -f ollama
+    cmds:
+      - |
+        if [ $(docker ps -a -f name=$CONTAINER_NAME | wc -l) -gt 1 ]; then
+          # Not first run, just resume the running container
+          docker start $CONTAINER_NAME
+        else
+          # First run
+          docker run -d -p 3001:3001 \
+            --cap-add SYS_ADMIN \
+            --name $CONTAINER_NAME \
+            -v "${STORAGE_LOCATION}":/app/server/storage \
+            -v "${STORAGE_LOCATION}"/.env:/app/server/.env \
+            -e STORAGE_DIR="/app/server/storage" \
+            mintplexlabs/anythingllm@sha256:$ANYTHING_LLM_VERSION # 2024/01/29 version # TODO: Write an update task that updates this!!
+        fi
+
+  update:
+    desc: "Update to latest anything-llm version"
+    #deps: [stop-daemon] # Stop the daemon before updating # TODO: How to set an optional dependency?
+    vars:
+      NEW_VERSION: '{{default "" .NEW_VERSION}}'
+    cmds:
+      - |
+        # If the container is running, stop it
+        if [ $(docker ps -f name=$CONTAINER_NAME | wc -l) -gt 1 ]; then
+          docker stop $CONTAINER_NAME
+        fi
+        # If NEW_VERSION is "" then tell the user to rerun and specify a version
+        echo "Will update to new version: {{.NEW_VERSION}}"
+        echo "(Note that this will stop and remove any running instances of {{.CONTAINER_NAME}})"
+        if [ -z "{{.NEW_VERSION}}" ]; then
+          echo "Please specify the version of anything-llm you want to update to. Run this command again with \"NEW_VERSION=your-version task update\""
+          exit 1
+        fi
+        # TODO: check docker hub automatically for what the latest sha is...
+        # Delete old container
+        if [ $(docker ps -a -f name=$CONTAINER_NAME | wc -l) -gt 1 ]; then
+          docker rm $CONTAINER_NAME
+        fi
+        # Search and replace in this file the old version string with the new version string.
+        sed -i "s/ANYTHING_LLM_VERSION: {{.ANYTHING_LLM_VERSION}}/ANYTHING_LLM_VERSION: {{.NEW_VERSION}}/g" taskfile.yml
+
+        echo "You may now run \"task start-daemon\" to start the new version of anything-llm."
+
+  stop-daemon:
+    desc: "Stop anything-llm"
+    cmds:
+      - |
+        docker stop $CONTAINER_NAME
